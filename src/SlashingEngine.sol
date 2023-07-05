@@ -90,6 +90,12 @@ contract SlashingEngine {
         emit GuardianStaked(msg.sender, amount, newRank);
     }
 
+    // Test helper
+    // TODO: consider removing this before deploying
+    function getGuardian(address guardian) external view returns (Guardian memory) {
+        return guardians[guardian];
+    }
+
     /**
      * @notice          uses the permit() functionality in the GTC contract to allow any address to
      *                  stake some amount of GTC to become a guardian. Permit will become obsolete
@@ -137,6 +143,7 @@ contract SlashingEngine {
                 orderGuardians(msg.sender, newRank);
             }
         } else {
+            // if they weren't ranked at all, just subtract the amount and send it back
             guardians[msg.sender].stakedAmount -= amount;
         }
 
@@ -260,13 +267,6 @@ contract SlashingEngine {
         CONFIDENCE = newMultiplier;
     }
 
-    function isGuardian(address check) external view returns (bool) {
-        if (guardians[check].rank <= MAX_GUARDIANS) {
-            return true;
-        }
-        return false;
-    }
-
     /**
      * @notice          iterate over the topGuardians array to figure out where
      *                  the new guardian fits. OK to use this loop given the size
@@ -305,14 +305,20 @@ contract SlashingEngine {
             // If there are already the max number of guardians, remove the lowest-ranked guardian
             if (topGuardians[MAX_GUARDIANS - 1] != address(0)) {
                 address lowestGuardian = topGuardians[MAX_GUARDIANS - 1];
-                guardians[lowestGuardian].rank = NO_RANK; // Reset the rank of the removed guardian
-                topGuardians.pop();
+                guardians[lowestGuardian].rank = NO_RANK;
             }
 
-            // Shift the rankings of guardians below the new guardian
-            for (uint256 i = newRank; i < topGuardians.length; i++) {
-                address guardianToShift = topGuardians[i];
-                guardians[guardianToShift].rank++;
+            // Shift all guardians right from the newRank and increment their rankings
+            for (uint256 i = newRank; i < topGuardians.length - 1; i++) {
+                if (topGuardians[i] != address(0)) {
+                    guardians[topGuardians[i]].rank++;
+                    topGuardians[i + 1] = topGuardians[i];
+                    if (topGuardians[i + 2] == address(0)) {
+                        break;
+                    }
+                } else {
+                    break;
+                }
             }
 
             // Insert the new guardian at the correct rank in the topGuardians array
