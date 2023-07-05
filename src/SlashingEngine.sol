@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.17;
 
-import "./interfaces/IIDStaking.sol";
-import "./interfaces/IGTC.sol";
+import {ERC20} from './ERC20.sol';
+import {IERC20Permit} from "./interfaces/IERC20Permit.sol";
+import {IIDStaking} from "./interfaces/IIDStaking.sol";
 
 // TODO: slashing a guardian, or having a guardian unstake, currently leaves fewer guardians in the array, and some address (who is
 // currently unranked) should be slotted into the newly opened spot. I could adapt the orderGuardians function to achieve this somehow?
@@ -13,6 +14,7 @@ contract SlashingEngine {
         uint256 stakedAmount;
         uint16 rank;
         uint8 votes;
+        bool exists;
     }
 
     struct FlaggedAccount {
@@ -22,21 +24,22 @@ contract SlashingEngine {
     }
 
     mapping(address => Guardian) public guardians;
+    uint8 public immutable MAX_GUARDIANS = 21;
     address[] public topGuardians;
 
     // These variables are used to create a linked list of flagged accounts,
     // which is more gas efficient than looping over an array.
     mapping(address => FlaggedAccount) public flaggedAccounts;
+    mapping(address => mapping(address => bool)) internal flaggedByGuardian;
     address public firstFlaggedAccount;
     address public lastFlaggedAccount;
     uint256 public numSybilAccounts;
 
-    IGTC public immutable gtc;
+    ERC20 public immutable gtc;
     IIDStaking public passport;
     // Used to ensure only the DAO can update the variables below
     address public immutable dao;
-    
-    uint8 public MAX_GUARDIANS = 21;
+
     uint8 public VOTES_THRESHOLD = 7;
     uint16 public NO_RANK = 65530;
 
@@ -46,10 +49,10 @@ contract SlashingEngine {
     // The lower this number is, the more confident the DAO is in our guardians.
     uint8 public CONFIDENCE = 2;
 
-    event GuardianStaked(address guardian, uint256 amount);
-    event GuardianUnstaked(address guardian, uint256 amount);
+    event GuardianStaked(address indexed guardian, uint256 indexed amount, uint16 indexed newRank);
+    event GuardianUnstaked(address guardian, uint256 indexed amount, uint16 indexed oldRank);
+    event GuardianSlashed(address guardian, uint256 indexed amount, uint16 indexed oldRank);
     event SybilAccountsFlagged(address sybil, address guardian);
-    event GuardianSlashed(address guardian, uint256 amount);
 
     modifier onlyDAO() {
         require(msg.sender == dao, "Only DAO can call");
@@ -61,12 +64,13 @@ contract SlashingEngine {
         address _passport,
         address _dao
     ) {
-        gtc = IGTC(_gtc);
+        gtc = ERC20(_gtc);
         passport = IIDStaking(_passport);
         // TODO: get the minimal interface for the DAO needed in this context
         dao = address(_dao);
-        topGuardians = new address[](0);
-        numSybilAccounts = 0;
+        // Initialize the topGuardians array. It must be fixed in solidity, hence
+        // the immutable key word added above.
+        topGuardians = new address[](MAX_GUARDIANS);
     }
 
     /**
@@ -79,13 +83,21 @@ contract SlashingEngine {
         
         gtc.transferFrom(msg.sender, address(this), amount);
 
-        Guardian storage guardian = guardians[msg.sender];
-        guardian.votes = 0;
-        guardians[msg.sender].stakedAmount += amount;
+        if(!guardians[msg.sender].exists) {
+            guardians[msg.sender] = Guardian({
+                stakedAmount: amount,
+                rank: NO_RANK,
+                votes: 0,          
+                exists: true
+            });
+        } else {
+            guardians[msg.sender].stakedAmount += amount;
+        }
+
         uint16 newRank = calculateRank(msg.sender);
         orderGuardians(msg.sender, newRank);
         
-        emit GuardianStaked(msg.sender, amount);
+        emit GuardianStaked(msg.sender, amount, newRank);
     }
 
     /**
@@ -98,7 +110,7 @@ contract SlashingEngine {
      * @param s         standard ECDSA parameter
      */
     function permitAndStake(uint256 _amount, uint8 v, bytes32 r, bytes32 s) external {
-        IGTC(address(gtc)).permit(msg.sender, address(this), _amount, 10 minutes, v, r, s);
+        IERC20Permit(address(gtc)).permit(msg.sender, address(this), _amount, 10 minutes, v, r, s);
         stake(_amount);
     }
 
@@ -132,7 +144,7 @@ contract SlashingEngine {
 
         gtc.transfer(msg.sender, amount);
 
-        emit GuardianUnstaked(msg.sender, amount);
+        emit GuardianUnstaked(msg.sender, amount, oldRank);
     }
 
     /**
@@ -164,9 +176,13 @@ contract SlashingEngine {
                 numSybilAccounts++;
             }
 
-            flaggedAccounts[account].amountCommitted += guardians[msg.sender].stakedAmount;
+            // Check if the guardian has already flagged the account
+            if (!flaggedByGuardian[account][msg.sender]) {
+                flaggedByGuardian[account][msg.sender] = true;
+                flaggedAccounts[account].amountCommitted += guardians[msg.sender].stakedAmount;
 
-            emit SybilAccountsFlagged(account, msg.sender);
+                emit SybilAccountsFlagged(account, msg.sender);
+            }
         }
     }
 
@@ -202,7 +218,7 @@ contract SlashingEngine {
 
         if (unstakeCount > 0) {
             // TODO: how to fetch the correct latest round?
-            //uint256 roundId = IIDStaking(PASSPORT_ADDRESS).latestRound();
+            //uint256 roundId = passport.latestRound();
             // TODO: check re-entrancy here
             passport.unstakeUsers(1, unstakeAccounts);
             numSybilAccounts -= unstakeCount;
@@ -245,17 +261,14 @@ contract SlashingEngine {
         // should not be able to become a guardian again
         uint256 slashedAmount = guardians[guardian].stakedAmount;
         guardians[guardian].stakedAmount = 0;
+        uint16 oldRank = guardians[guardian].rank;
         guardians[guardian].rank = NO_RANK;
 
-        emit GuardianSlashed(guardian, slashedAmount);
+        emit GuardianSlashed(guardian, slashedAmount, oldRank);
     }
 
     function updatePassport(address newPassport) external onlyDAO {
         passport = IIDStaking(newPassport);
-    }
-
-    function updateMaxGuardians(uint8 newMax) external onlyDAO {
-        MAX_GUARDIANS = newMax;
     }
 
     function updateVoteThreshold(uint8 newThreshold) external onlyDAO {
@@ -280,13 +293,14 @@ contract SlashingEngine {
      * @param guardian  the guardian for whom we are calculating a new ranking
      */
     function calculateRank(address guardian) internal view returns (uint16) {
-        uint16 rank = MAX_GUARDIANS + 1;
+        // start the search 1 outside the range for max efficiency
+        uint16 rank = MAX_GUARDIANS + 2;
         uint256 stakedAmount = guardians[guardian].stakedAmount;
 
         uint256 left = 0;
-        uint256 right = topGuardians.length - 1;
+        uint256 right = MAX_GUARDIANS + 1;
 
-        while (left <= right) {
+        while (left < right) {
             uint256 mid = (left + right) / 2;
             address existingGuardian = topGuardians[mid];
             
@@ -294,9 +308,15 @@ contract SlashingEngine {
                 rank = uint16(mid + 1);
                 left = mid + 1;
             } else {
-                rank = NO_RANK;
-                right = mid - 1;
+                right = mid;
             }
+        }
+
+        // TODO: this means that everyone outside MAX_GUARDIANS receives no rank,
+        // which is gas efficient, but means we can't load a new guardian automatically
+        // when some unstakes or is slashed. Is there a better way?
+        if (rank == MAX_GUARDIANS + 1) {
+            rank = NO_RANK;
         }
 
         return rank;
@@ -311,7 +331,7 @@ contract SlashingEngine {
      */
     function orderGuardians(address guardian, uint16 newRank) internal {
         if (newRank <= MAX_GUARDIANS) {
-            // If there are already 21 guardians, remove the lowest-ranked guardian
+            // If there are already the max number of guardians, remove the lowest-ranked guardian
             if (topGuardians.length == MAX_GUARDIANS) {
                 address lowestGuardian = topGuardians[MAX_GUARDIANS - 1];
                 guardians[lowestGuardian].rank = NO_RANK; // Reset the rank of the removed guardian
