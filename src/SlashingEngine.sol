@@ -152,7 +152,8 @@ contract SlashingEngine {
      * @param accounts  the array of accounts considered to be sybils by this guardian 
      */
     function flagSybilAccounts(address[] calldata accounts) external {
-        require(guardians[msg.sender].rank < MAX_GUARDIANS, "Not a guardian");
+        require(guardians[msg.sender].stakedAmount > 0, "Not a guardian");
+        require(guardians[msg.sender].rank < MAX_GUARDIANS, "Not a topGuardian");
 
         for (uint256 i = 0; i < accounts.length; i++) {
             address account = accounts[i];
@@ -237,7 +238,8 @@ contract SlashingEngine {
      * @param guardian  the guardian to be slashed
      */
     function slashGuardian(address guardian) external {
-        require(guardians[msg.sender].rank < MAX_GUARDIANS, "Not a guardian");
+        require(guardians[msg.sender].stakedAmount > 0, "Not a guardian");
+        require(guardians[msg.sender].rank < MAX_GUARDIANS, "Not a topGuardian");
 
         // Increment the votes against the specified guardian
         guardians[guardian].votes++;
