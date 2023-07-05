@@ -12,9 +12,8 @@ import {IIDStaking} from "./interfaces/IIDStaking.sol";
 contract SlashingEngine {
     struct Guardian {
         uint256 stakedAmount;
-        uint16 rank;
-        uint8 votes;
-        bool exists;
+        uint256 rank;
+        uint256 votes;
     }
 
     struct FlaggedAccount {
@@ -40,8 +39,8 @@ contract SlashingEngine {
     // Used to ensure only the DAO can update the variables below
     address public immutable dao;
 
-    uint8 public VOTES_THRESHOLD = 7;
-    uint16 public NO_RANK = 65530;
+    uint256 public VOTES_THRESHOLD = 7;
+    uint256 public NO_RANK = 65530;
 
     // Used in the confidenceThreshold function, which multiplies the highest amount
     // staked in the topGuardians array by this number. Any flagged account with more than
@@ -49,10 +48,10 @@ contract SlashingEngine {
     // The lower this number is, the more confident the DAO is in our guardians.
     uint8 public CONFIDENCE = 2;
 
-    event GuardianStaked(address indexed guardian, uint256 indexed amount, uint16 indexed newRank);
-    event GuardianUnstaked(address guardian, uint256 indexed amount, uint16 indexed oldRank);
-    event GuardianSlashed(address guardian, uint256 indexed amount, uint16 indexed oldRank);
-    event SybilAccountsFlagged(address sybil, address guardian);
+    event GuardianStaked(address indexed guardian, uint256 indexed amount, uint256 indexed newRank);
+    event GuardianUnstaked(address indexed guardian, uint256 indexed amount, uint256 indexed oldRank);
+    event GuardianSlashed(address indexed guardian, uint256 indexed amount, uint256 indexed oldRank);
+    event SybilAccountsFlagged(address indexed sybil, address indexed guardian);
 
     modifier onlyDAO() {
         require(msg.sender == dao, "Only DAO can call");
@@ -82,19 +81,10 @@ contract SlashingEngine {
         require(amount > 0, "Must stake more than 0");
         
         gtc.transferFrom(msg.sender, address(this), amount);
-
-        if(!guardians[msg.sender].exists) {
-            guardians[msg.sender] = Guardian({
-                stakedAmount: amount,
-                rank: NO_RANK,
-                votes: 0,          
-                exists: true
-            });
-        } else {
-            guardians[msg.sender].stakedAmount += amount;
-        }
-
-        uint16 newRank = calculateRank(msg.sender);
+        
+        guardians[msg.sender].stakedAmount += amount;
+        uint256 newRank = calculateRank(msg.sender);
+        guardians[msg.sender].rank = newRank;
         orderGuardians(msg.sender, newRank);
         
         emit GuardianStaked(msg.sender, amount, newRank);
@@ -122,24 +112,32 @@ contract SlashingEngine {
     function unstake(uint256 amount) external {
         require(guardians[msg.sender].stakedAmount > 0, "Nothing to withdraw");
         
-        uint16 oldRank = guardians[msg.sender].rank;
-        // we need to reorder the topGuardians array if this withdrawal comes from one of them
-        if (oldRank <= MAX_GUARDIANS) {
-            uint256 indexToRemove = oldRank - 1;
-            removeTopGuardian(indexToRemove);
+        uint256 oldRank = guardians[msg.sender].rank;
+        
+        if (oldRank < MAX_GUARDIANS) {
             // if the withdrawal is the full amount, we can just set their ranking to NO_RANK
             // and shift everyone up, else we need to recalculate the ranking and reorder accordingly
             if (guardians[msg.sender].stakedAmount == amount) {
-                for (uint256 i = indexToRemove; i < topGuardians.length; i++) {
-                    address nextGuardian = topGuardians[i];
-                    guardians[nextGuardian].rank--;
+                for (uint256 i = oldRank + 1; i < topGuardians.length; i++) {
+                    if (topGuardians[i] != address(0)) {
+                        address nextGuardian = topGuardians[i];
+                        guardians[nextGuardian].rank--;
+                    } else {
+                        break;
+                    }
                 }
                 guardians[msg.sender].rank = NO_RANK;
+                guardians[msg.sender].stakedAmount = 0;
+                removeTopGuardian(oldRank);
             } else {
                 guardians[msg.sender].stakedAmount -= amount;
-                uint16 newRank = calculateRank(msg.sender);
+                removeTopGuardian(oldRank);
+                uint256 newRank = calculateRank(msg.sender);
+                guardians[msg.sender].rank = newRank;
                 orderGuardians(msg.sender, newRank);
             }
+        } else {
+            guardians[msg.sender].stakedAmount -= amount;
         }
 
         gtc.transfer(msg.sender, amount);
@@ -154,7 +152,7 @@ contract SlashingEngine {
      * @param accounts  the array of accounts considered to be sybils by this guardian 
      */
     function flagSybilAccounts(address[] calldata accounts) external {
-        require(guardians[msg.sender].rank <= MAX_GUARDIANS, "Not a guardian");
+        require(guardians[msg.sender].rank < MAX_GUARDIANS, "Not a guardian");
 
         for (uint256 i = 0; i < accounts.length; i++) {
             address account = accounts[i];
@@ -239,7 +237,7 @@ contract SlashingEngine {
      * @param guardian  the guardian to be slashed
      */
     function slashGuardian(address guardian) external {
-        require(guardians[msg.sender].rank <= MAX_GUARDIANS, "Not a guardian");
+        require(guardians[msg.sender].rank < MAX_GUARDIANS, "Not a guardian");
 
         // Increment the votes against the specified guardian
         guardians[guardian].votes++;
@@ -247,13 +245,17 @@ contract SlashingEngine {
         require(guardians[guardian].votes >= VOTES_THRESHOLD, "Not enough votes yet");
 
         // First, remove the guardian from topGuardians array
-        uint256 indexToRemove = guardians[guardian].rank - 1;
-        removeTopGuardian(indexToRemove);
+        uint256 oldRank = guardians[guardian].rank;
+        removeTopGuardian(oldRank);
 
         // Then, update the rankings in the topGuardians array
-        for (uint256 i = indexToRemove; i < topGuardians.length; i++) {
-            address nextGuardian = topGuardians[i];
-            guardians[nextGuardian].rank--;
+        for (uint256 i = oldRank + 1; i < topGuardians.length; i++) {
+            if (topGuardians[i] != address(0)) {
+                address nextGuardian = topGuardians[i];
+                guardians[nextGuardian].rank--;
+            } else {
+                break;
+            }
         }
 
         // Finally, slash the guardian's stake and reset their ranking
@@ -261,7 +263,6 @@ contract SlashingEngine {
         // should not be able to become a guardian again
         uint256 slashedAmount = guardians[guardian].stakedAmount;
         guardians[guardian].stakedAmount = 0;
-        uint16 oldRank = guardians[guardian].rank;
         guardians[guardian].rank = NO_RANK;
 
         emit GuardianSlashed(guardian, slashedAmount, oldRank);
@@ -271,12 +272,12 @@ contract SlashingEngine {
         passport = IIDStaking(newPassport);
     }
 
-    function updateVoteThreshold(uint8 newThreshold) external onlyDAO {
+    function updateVoteThreshold(uint256 newThreshold) external onlyDAO {
         VOTES_THRESHOLD = newThreshold;
     }
 
-    function updateConfidence(uint8 newInterval) external onlyDAO {
-        CONFIDENCE = newInterval;
+    function updateConfidence(uint8 newMultiplier) external onlyDAO {
+        CONFIDENCE = newMultiplier;
     }
 
     function isGuardian(address check) external view returns (bool) {
@@ -287,36 +288,26 @@ contract SlashingEngine {
     }
 
     /**
-     * @notice          Since the topGuardians array is sorted in descending order of staked amounts, 
-     *                  we can perform a binary search to find the correct rank. This means doing less
-     *                  iterations than a for loop would entail.
+     * @notice          iterate over the topGuardians array to figure out where
+     *                  the new guardian fits. OK to use this loop given the size
+     *                  is fixed to 21.
      * @param guardian  the guardian for whom we are calculating a new ranking
      */
-    function calculateRank(address guardian) internal view returns (uint16) {
-        // start the search 1 outside the range for max efficiency
-        uint16 rank = MAX_GUARDIANS + 2;
-        uint256 stakedAmount = guardians[guardian].stakedAmount;
-
-        uint256 left = 0;
-        uint256 right = MAX_GUARDIANS + 1;
-
-        while (left < right) {
-            uint256 mid = (left + right) / 2;
-            address existingGuardian = topGuardians[mid];
-            
-            if (guardians[existingGuardian].stakedAmount > stakedAmount) {
-                rank = uint16(mid + 1);
-                left = mid + 1;
-            } else {
-                right = mid;
-            }
-        }
-
+    function calculateRank(address guardian) internal view returns (uint256) {
         // TODO: this means that everyone outside MAX_GUARDIANS receives no rank,
         // which is gas efficient, but means we can't load a new guardian automatically
         // when some unstakes or is slashed. Is there a better way?
-        if (rank == MAX_GUARDIANS + 1) {
-            rank = NO_RANK;
+        uint256 rank = NO_RANK;
+        uint256 stakedAmount = guardians[guardian].stakedAmount;
+
+        // Iterate over the existing guardians in descending order
+        for (uint256 i = 0; i < topGuardians.length; i++) {
+            address existingGuardian = topGuardians[i];
+            
+            if (guardians[existingGuardian].stakedAmount < stakedAmount) {
+                rank = uint256(i);
+                break;
+            }
         }
 
         return rank;
@@ -329,42 +320,37 @@ contract SlashingEngine {
      * @param guardian  the guardian to insert into the topGuardians array
      * @param newRank   the rank at which to insert the new guardian
      */
-    function orderGuardians(address guardian, uint16 newRank) internal {
-        if (newRank <= MAX_GUARDIANS) {
+    function orderGuardians(address guardian, uint256 newRank) internal {
+        if (newRank < MAX_GUARDIANS) {
             // If there are already the max number of guardians, remove the lowest-ranked guardian
-            if (topGuardians.length == MAX_GUARDIANS) {
+            if (topGuardians[MAX_GUARDIANS - 1] != address(0)) {
                 address lowestGuardian = topGuardians[MAX_GUARDIANS - 1];
                 guardians[lowestGuardian].rank = NO_RANK; // Reset the rank of the removed guardian
                 topGuardians.pop();
             }
 
             // Shift the rankings of guardians below the new guardian
-            for (uint256 i = topGuardians.length; i > newRank; i--) {
-                address guardianToShift = topGuardians[i - 1];
+            for (uint256 i = newRank; i < topGuardians.length; i++) {
+                address guardianToShift = topGuardians[i];
                 guardians[guardianToShift].rank++;
             }
 
             // Insert the new guardian at the correct rank in the topGuardians array
-            topGuardians[newRank - 1] = guardian;
-            // Update the rank of the guardian
-            guardians[guardian].rank = newRank;
+            topGuardians[newRank] = guardian;
         } 
     }
 
     /**
-     * @notice              helper function to remove a guardian when slashed or withdrawing.
-     *                      It's kinda ugly, but seeing as the guardians array is only ~21 members,
-     *                      it should suffice.
-     * @param indexToRemove the index from which we will be removing this guardian, based on their rank.
+     * @notice          helper function to remove a guardian when slashed or withdrawing.
+     *                  It's kinda ugly, but seeing as the guardians array is only 21 members,
+     *                  it should suffice.
+     * @param oldRank   the index from which we will be removing this guardian, equal to their rank.
      */
-    function removeTopGuardian(uint256 indexToRemove) internal {
-        require(indexToRemove < topGuardians.length, "Invalid index");
-
-        for (uint256 i = indexToRemove; i < topGuardians.length - 1; i++) {
-            topGuardians[i] = topGuardians[i + 1];
+    function removeTopGuardian(uint256 oldRank) internal {
+        for (uint256 i = topGuardians.length - 1; i > oldRank; i--) {
+            topGuardians[i] = topGuardians[i - 1];
         }
-
-        topGuardians.pop();
+        topGuardians[topGuardians.length - 1] = address(0);
     }
 
     /**
