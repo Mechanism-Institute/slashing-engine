@@ -237,37 +237,15 @@ contract SlashingEngine {
      *                  not sybils).
      * @param guardian  the guardian to be slashed
      */
-    function slashGuardian(address guardian) external {
+    function voteAgainstGuardian(address guardian) external returns (bool) {
         require(guardians[msg.sender].stakedAmount > 0, "Not a guardian");
         require(guardians[msg.sender].rank < MAX_GUARDIANS, "Not a topGuardian");
 
         // Increment the votes against the specified guardian
         guardians[guardian].votes++;
 
-        require(guardians[guardian].votes >= VOTES_THRESHOLD, "Not enough votes yet");
-
-        // First, remove the guardian from topGuardians array
-        uint256 oldRank = guardians[guardian].rank;
-        removeTopGuardian(oldRank);
-
-        // Then, update the rankings in the topGuardians array
-        for (uint256 i = oldRank + 1; i < topGuardians.length; i++) {
-            if (topGuardians[i] != address(0)) {
-                address nextGuardian = topGuardians[i];
-                guardians[nextGuardian].rank--;
-            } else {
-                break;
-            }
-        }
-
-        // Finally, slash the guardian's stake and reset their ranking
-        // We leave the votes as is, because once voted out, the same account
-        // should not be able to become a guardian again
-        uint256 slashedAmount = guardians[guardian].stakedAmount;
-        guardians[guardian].stakedAmount = 0;
-        guardians[guardian].rank = NO_RANK;
-
-        emit GuardianSlashed(guardian, slashedAmount, oldRank);
+        // Test to see if the number of votes passes the threshold
+        return slashGuardian(guardian, guardians[guardian].votes);
     }
 
     function updatePassport(address newPassport) external onlyDAO {
@@ -340,6 +318,37 @@ contract SlashingEngine {
             // Insert the new guardian at the correct rank in the topGuardians array
             topGuardians[newRank] = guardian;
         } 
+    }
+
+    function slashGuardian(address guardian, uint256 votes) internal returns (bool) {
+        if (votes <= VOTES_THRESHOLD) {
+            return false;
+        } else {
+            // First, remove the guardian from topGuardians array
+            uint256 oldRank = guardians[guardian].rank;
+            removeTopGuardian(oldRank);
+
+            // Then, update the rankings in the topGuardians array
+            for (uint256 i = oldRank + 1; i < topGuardians.length; i++) {
+                if (topGuardians[i] != address(0)) {
+                    address nextGuardian = topGuardians[i];
+                    guardians[nextGuardian].rank--;
+                } else {
+                    break;
+                }
+            }
+
+            // Finally, slash the guardian's stake and reset their ranking
+            // We leave the votes as is, because once voted out, the same account
+            // should not be able to become a guardian again
+            uint256 slashedAmount = guardians[guardian].stakedAmount;
+            guardians[guardian].stakedAmount = 0;
+            guardians[guardian].rank = NO_RANK;
+
+            emit GuardianSlashed(guardian, slashedAmount, oldRank);
+
+            return true;
+        }
     }
 
     /**
