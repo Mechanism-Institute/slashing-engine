@@ -133,8 +133,8 @@ contract SlashingEngine {
 
     /**
      * @notice          enables any of the topGuardians to submit an array of addresses they believe to be sybils.
-                        We use a linked list here, rather than an array to handle the case where large lists of
-                        accounts are found and submitted, which would cost too much gas to loop through on chain.
+     *                  We have explored both linked lists and a merkle root - in this context they are not any 
+     *                  more efficient.
      * @param accounts  the array of accounts considered to be sybils by this guardian 
      */
     function flagSybilAccounts(address[] calldata accounts) external {
@@ -144,7 +144,7 @@ contract SlashingEngine {
         for (uint256 i = 0; i < accounts.length; i++) {
             address account = accounts[i];
             // If this account has never been flagged at all before, we want to
-            // write it into the flaggedAccounts array at numSybilAccounts
+            // write it into the flaggedAccounts mapping at numSybilAccounts
             if (amountCommittedPerAccount[account] == 0) {
                 flaggedAccounts[numSybilAccounts] = account;
                 amountCommittedPerAccount[account] = guardians[msg.sender].stakedAmount;
