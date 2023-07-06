@@ -4,7 +4,6 @@ pragma solidity 0.8.17;
 import {ERC20} from './ERC20.sol';
 import {IERC20Permit} from "./interfaces/IERC20Permit.sol";
 import {IIDStaking} from "./interfaces/IIDStaking.sol";
-import {MerkleProof} from "./libraries/MerkleProof.sol";
 
 // TODO: slashing a guardian, or having a guardian unstake, currently leaves fewer guardians in the array, and some address (who is
 // currently unranked) should be slotted into the newly opened spot. I could adapt the orderGuardians function to achieve this somehow?
@@ -27,10 +26,12 @@ contract SlashingEngine {
     uint8 public immutable MAX_GUARDIANS = 21;
     address[] public topGuardians;
 
-    // These mappings are used in the merkle tree of flagged accounts
-    bytes32 public merkleRoot;
+    // These mappings are used in the linked list of flagged accounts
+    mapping(address => FlaggedAccount) public flaggedAccounts;
     mapping(address => mapping(address => bool)) internal flaggedByGuardian;
-    mapping(address => uint256) public amountCommitted;
+    address public firstFlaggedAccount;
+    address public lastFlaggedAccount;
+    uint256 public numSybilAccounts;
 
     ERC20 public immutable gtc;
     IIDStaking public passport;
@@ -49,7 +50,7 @@ contract SlashingEngine {
     event GuardianStaked(address indexed guardian, uint256 indexed amount, uint256 indexed newRank);
     event GuardianUnstaked(address indexed guardian, uint256 indexed amount, uint256 indexed oldRank);
     event GuardianSlashed(address indexed guardian, uint256 indexed amount, uint256 indexed oldRank);
-    event SybilAccountsFlagged(address indexed sybil, uint256 indexed amountCommitted);
+    event SybilAccountFlagged(address indexed sybil, uint256 indexed amountCommitted);
 
     modifier onlyDAO() {
         require(msg.sender == dao, "Only DAO can call");
@@ -146,41 +147,42 @@ contract SlashingEngine {
 
     /**
      * @notice          enables any of the topGuardians to submit an array of addresses they believe to be sybils.
-     *                  We use a merkle tree here, as it is the most gas efficient way we know to store potentially
-     *                  large data sets on chain.
-     *                  TODO: I'm not sure that it's actually valid to submit an array of addresses as the leaf...
+                        We use a linked list here, rather than an array to handle the case where large lists of
+                        accounts are found and submitted, which would cost too much gas to loop through on chain.
      * @param accounts  the array of accounts considered to be sybils by this guardian 
      */
-    function flagSybilAccounts(address[] calldata accounts, bytes32[] calldata proof) external {
+    function flagSybilAccounts(address[] calldata accounts) external {
         require(guardians[msg.sender].stakedAmount > 0, "Not a guardian");
         require(guardians[msg.sender].rank < MAX_GUARDIANS, "Not a topGuardian");
-        require(
-            MerkleProof.verifyCalldata(proof, merkleRoot, keccak256(abi.encodePacked(accounts))),
-            "Invalid proof"
-        );
 
         for (uint256 i = 0; i < accounts.length; i++) {
             address account = accounts[i];
 
-            // we include this require because we don't want to duplicate accounts and have no other way
-            // of checking, if the leaf we are submitting is an array of accounts. In the case that a
-            // guardian submits an array with an address they have already flagged, the whole function
-            // will revert, which is not ideal, but is the trade off we make when using merkle trees.
-            require(!isFlagged(account) || !flaggedByGuardian[account][msg.sender], "Already flagged");
-            
-            if (!isFlagged(account)) {
+            if (!flaggedAccounts[account].exists) {
+                flaggedAccounts[account] = FlaggedAccount({
+                    amountCommitted: 0,
+                    next: address(0),
+                    exists: true
+                });
+
+                if (numSybilAccounts == 0) {
+                    firstFlaggedAccount = account;
+                } else {
+                    flaggedAccounts[lastFlaggedAccount].next = account;
+                }
+
+                lastFlaggedAccount = account;
+                numSybilAccounts++;
+            }
+
+            // Check if the guardian has already flagged the account
+            if (!flaggedByGuardian[account][msg.sender]) {
                 flaggedByGuardian[account][msg.sender] = true;
-                amountCommitted[account] = guardians[msg.sender].stakedAmount;
-                emit SybilAccountsFlagged(account, amountCommitted[account]);
-            } else if (!flaggedByGuardian[account][msg.sender]) {
-                // if the account is flagged, but not by this guardian, increase the amountComitted
-                flaggedByGuardian[account][msg.sender] = true;
-                amountCommitted[account] += guardians[msg.sender].stakedAmount;
-                emit SybilAccountsFlagged(account, amountCommitted[account]);
+                flaggedAccounts[account].amountCommitted += guardians[msg.sender].stakedAmount;
+
+                emit SybilAccountFlagged(account, flaggedAccounts[account].amountCommitted);
             }
         }
-
-        merkleRoot = MerkleProof.processProofCalldata(proof, keccak256(abi.encodePacked(accounts)));
     }
 
     /**
@@ -193,44 +195,44 @@ contract SlashingEngine {
      *                  too large, which could brick the contract if traversing it exceeds gas limits...
      */
     function slashFlaggedAccounts() external {
-        // uint256 threshold = confidenceThreshold();
-        // uint256 unstakeCount = 0;
-        // address currentAccount = firstFlaggedAccount;
-        // address[] memory unstakeAccounts = new address[](numSybilAccounts);
+        uint256 threshold = confidenceThreshold();
+        uint256 unstakeCount = 0;
+        address currentAccount = firstFlaggedAccount;
+        address[] memory unstakeAccounts = new address[](numSybilAccounts);
 
-        // while (currentAccount != address(0)) {
-        //     address nextAccount = flaggedAccounts[currentAccount].next;
-        //     uint256 amountCommitted = flaggedAccounts[currentAccount].amountCommitted;
+        while (currentAccount != address(0)) {
+            address nextAccount = flaggedAccounts[currentAccount].next;
+            uint256 amountCommitted = flaggedAccounts[currentAccount].amountCommitted;
 
-        //     if (amountCommitted > threshold) {
-        //         unstakeAccounts[unstakeCount] = currentAccount;
-        //         unstakeCount++;
-        //         delete flaggedAccounts[currentAccount];
-        //     } else {
-        //         break; // No need to continue checking further accounts
-        //     }
+            if (amountCommitted > threshold) {
+                unstakeAccounts[unstakeCount] = currentAccount;
+                unstakeCount++;
+                delete flaggedAccounts[currentAccount];
+            } else {
+                break; // No need to continue checking further accounts
+            }
 
-        //     currentAccount = nextAccount;
-        // }
+            currentAccount = nextAccount;
+        }
 
-        // if (unstakeCount > 0) {
-        //     // TODO: Ideally, this function would get called only once
-        //     // per "epoch", where the epoch coincides with the end of
-        //     // each round or period for which passports are valid.
-        //     // I know this is likely to change in the next implementation
-        //     // of passport though, so am leaving it as a todo for now. 
-        //     //uint256 roundId = passport.latestRound();
-        //     // TODO: check re-entrancy here
-        //     passport.unstakeUsers(1, unstakeAccounts);
-        //     numSybilAccounts -= unstakeCount;
+        if (unstakeCount > 0) {
+            // TODO: Ideally, this function would get called only once
+            // per "epoch", where the epoch coincides with the end of
+            // each round or period for which passports are valid.
+            // I know this is likely to change in the next implementation
+            // of passport though, so am leaving it as a todo for now. 
+            //uint256 roundId = passport.latestRound();
+            // TODO: check re-entrancy here
+            passport.unstakeUsers(1, unstakeAccounts);
+            numSybilAccounts -= unstakeCount;
 
-        //     // Update the firstFlaggedAccount if it has been removed
-        //     if (numSybilAccounts == 0) {
-        //         firstFlaggedAccount = address(0);
-        //     } else if (!flaggedAccounts[firstFlaggedAccount].exists) {
-        //         firstFlaggedAccount = flaggedAccounts[firstFlaggedAccount].next;
-        //     }
-        // }
+            // Update the firstFlaggedAccount if it has been removed
+            if (numSybilAccounts == 0) {
+                firstFlaggedAccount = address(0);
+            } else if (!flaggedAccounts[firstFlaggedAccount].exists) {
+                firstFlaggedAccount = flaggedAccounts[firstFlaggedAccount].next;
+            }
+        }
     }
 
     /**
@@ -269,14 +271,6 @@ contract SlashingEngine {
      */
     function getGuardian(address guardian) external view returns (Guardian memory) {
         return guardians[guardian];
-    }
-
-    /**
-     * @notice          Helper for merkle root things in the flagSybilAccounts function.
-     * @param account   the account flagged, left public so anyone can query it.    
-     */
-    function isFlagged(address account) public view returns (bool) {
-        return amountCommitted[account] > 0;
     }
 
     /**
