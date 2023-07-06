@@ -200,7 +200,7 @@ contract SlashingEngineTest is Test {
         assertEq(slashingEngine.numSybilAccounts(), 4);
 
         // now slash again. we set CONFIDENCE to 1, so the threshold
-        // should be 200 gtc, so 6 and 6 should now pass that and be slashed
+        // should be 200 gtc, so 4 and 6 should now pass that and be slashed
         slashingEngine.slashFlaggedAccounts();
         // should be 2 flagged accounts left: 5 and 7
         // TODO: figure out why these fail

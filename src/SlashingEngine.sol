@@ -177,6 +177,10 @@ contract SlashingEngine {
         address[] memory addressesToSlash = new address[](numSybilAccounts);
         uint256 numAddressesToSlash = 0;
         for (uint256 i = 0; i < numSybilAccounts; i++) {
+            // TODO: I wanted to try and make sure that we don't re-loop over
+            // accounts that have already been slashed, but this won't
+            // work if we slash at index 4 and 6, bu not 5, for eg.
+            // maybe this is cause to return to a linked list.
             address toCheck = flaggedAccounts[i + numAddressesSlashed];
             uint256 amountCommitted = amountCommittedPerAccount[toCheck];
             if (amountCommitted > threshold) {
