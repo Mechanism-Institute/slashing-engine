@@ -114,18 +114,10 @@ contract SlashingEngine {
         uint256 oldRank = guardians[msg.sender].rank;
         
         if (oldRank < MAX_GUARDIANS) {
+            guardians[msg.sender].rank = NO_RANK;
             // if the withdrawal is the full amount, we can just set their ranking to NO_RANK
             // and shift everyone up, else we need to recalculate the ranking and reorder accordingly
             if (guardians[msg.sender].stakedAmount == amount) {
-                for (uint256 i = oldRank + 1; i < topGuardians.length; i++) {
-                    if (topGuardians[i] != address(0)) {
-                        address nextGuardian = topGuardians[i];
-                        guardians[nextGuardian].rank--;
-                    } else {
-                        break;
-                    }
-                }
-                guardians[msg.sender].rank = NO_RANK;
                 guardians[msg.sender].stakedAmount = 0;
                 removeTopGuardian(oldRank);
             } else {
@@ -289,7 +281,6 @@ contract SlashingEngine {
         // Iterate over the existing guardians in descending order
         for (uint256 i = 0; i < topGuardians.length; i++) {
             address existingGuardian = topGuardians[i];
-            
             if (guardians[existingGuardian].stakedAmount < stakedAmount) {
                 rank = uint256(i);
                 break;
@@ -336,26 +327,16 @@ contract SlashingEngine {
         if (votes <= VOTES_THRESHOLD) {
             return false;
         } else {
-            // First, remove the guardian from topGuardians array
+            // First, reset the rank and remove from topGuardians array
             uint256 oldRank = guardians[guardian].rank;
+            guardians[guardian].rank = NO_RANK;
             removeTopGuardian(oldRank);
 
-            // Then, update the rankings in the topGuardians array
-            for (uint256 i = oldRank + 1; i < topGuardians.length; i++) {
-                if (topGuardians[i] != address(0)) {
-                    address nextGuardian = topGuardians[i];
-                    guardians[nextGuardian].rank--;
-                } else {
-                    break;
-                }
-            }
-
-            // Finally, slash the guardian's stake and reset their ranking
+            // Then slash the guardian's stake
             // We leave the votes as is, because once voted out, the same account
             // should not be able to become a guardian again
             uint256 slashedAmount = guardians[guardian].stakedAmount;
             guardians[guardian].stakedAmount = 0;
-            guardians[guardian].rank = NO_RANK;
 
             emit GuardianSlashed(guardian, slashedAmount, oldRank);
 
@@ -370,10 +351,21 @@ contract SlashingEngine {
      * @param oldRank   the index from which we will be removing this guardian, equal to their rank.
      */
     function removeTopGuardian(uint256 oldRank) internal {
-        for (uint256 i = topGuardians.length - 1; i > oldRank; i--) {
-            topGuardians[i] = topGuardians[i - 1];
+        // Shift all guardians left from the oldRank and decrement their rankings
+        for (uint256 i = oldRank; i < topGuardians.length - 1; i++) {
+            if (topGuardians[i] != address(0)) {
+                topGuardians[i] = topGuardians[i + 1];
+                if (topGuardians[i + 1] != address(0)) {
+                    guardians[topGuardians[i + 1]].rank--;
+                }
+            } else {
+                break;
+            }
         }
-        topGuardians[topGuardians.length - 1] = address(0);
+        // set the last guardian back to address(0) if necessary
+        if (topGuardians[topGuardians.length - 1] != address(0)) {
+            topGuardians[topGuardians.length - 1] = address(0);
+        }
     }
 
     /**
