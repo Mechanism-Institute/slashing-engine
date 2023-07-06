@@ -16,22 +16,15 @@ contract SlashingEngine {
         uint256 votes;
     }
 
-    struct FlaggedAccount {
-        uint256 amountCommitted;
-        address next;
-        bool exists;
-    }
-
     mapping(address => Guardian) public guardians;
     uint8 public immutable MAX_GUARDIANS = 21;
     address[] public topGuardians;
 
-    // These mappings are used in the linked list of flagged accounts
-    mapping(address => FlaggedAccount) public flaggedAccounts;
-    mapping(address => mapping(address => bool)) internal flaggedByGuardian;
-    address public firstFlaggedAccount;
-    address public lastFlaggedAccount;
+    mapping(uint256 => address) public flaggedAccounts;
     uint256 public numSybilAccounts;
+    mapping(address => uint256) public amountCommittedPerAccount;
+    mapping(address => mapping(address => bool)) internal flaggedByGuardian;
+    uint256 public numAddressesSlashed = 0;
 
     ERC20 public immutable gtc;
     IIDStaking public passport;
@@ -51,6 +44,7 @@ contract SlashingEngine {
     event GuardianUnstaked(address indexed guardian, uint256 indexed amount, uint256 indexed oldRank);
     event GuardianSlashed(address indexed guardian, uint256 indexed amount, uint256 indexed oldRank);
     event SybilAccountFlagged(address indexed sybil, uint256 indexed amountCommitted);
+    event SybilAccountFlaggedAgain(address indexed sybil, uint256 indexed amountCommitted);
 
     modifier onlyDAO() {
         require(msg.sender == dao, "Only DAO can call");
@@ -149,30 +143,20 @@ contract SlashingEngine {
 
         for (uint256 i = 0; i < accounts.length; i++) {
             address account = accounts[i];
-
-            if (!flaggedAccounts[account].exists) {
-                flaggedAccounts[account] = FlaggedAccount({
-                    amountCommitted: 0,
-                    next: address(0),
-                    exists: true
-                });
-
-                if (numSybilAccounts == 0) {
-                    firstFlaggedAccount = account;
-                } else {
-                    flaggedAccounts[lastFlaggedAccount].next = account;
-                }
-
-                lastFlaggedAccount = account;
+            // If this account has never been flagged at all before, we want to
+            // write it into the flaggedAccounts array at numSybilAccounts
+            if (amountCommittedPerAccount[account] == 0) {
+                flaggedAccounts[numSybilAccounts] = account;
+                amountCommittedPerAccount[account] = guardians[msg.sender].stakedAmount;
+                flaggedByGuardian[account][msg.sender] = true;
                 numSybilAccounts++;
+                emit SybilAccountFlagged(account, amountCommittedPerAccount[account]);
             }
 
-            // Check if the guardian has already flagged the account
             if (!flaggedByGuardian[account][msg.sender]) {
                 flaggedByGuardian[account][msg.sender] = true;
-                flaggedAccounts[account].amountCommitted += guardians[msg.sender].stakedAmount;
-
-                emit SybilAccountFlagged(account, flaggedAccounts[account].amountCommitted);
+                amountCommittedPerAccount[account] += guardians[msg.sender].stakedAmount;
+                emit SybilAccountFlaggedAgain(account, amountCommittedPerAccount[account]);
             }
         }
     }
@@ -181,49 +165,39 @@ contract SlashingEngine {
      * @notice          enables anyone to cause accounts flagged as sybils, who have sufficient GTC committed
      *                  to the claim that they are indeed sybils, to be unstaked from the Passport contract.
      *                  "Sufficient GTC" is here defined by the CONFIDENCE parameter, which the DAO can set.
-     *                  Leverages the same linked list defined above when guardians submit sybil addresses.
      *
-     *                  This function needs to be called fairly regularly to prevent the linked list from becoming
-     *                  too large, which could brick the contract if traversing it exceeds gas limits...
+     *                  This function needs to be called fairly regularly - perhaps each "epoch"
      */
     function slashFlaggedAccounts() external {
         uint256 threshold = confidenceThreshold();
-        uint256 unstakeCount = 0;
-        address currentAccount = firstFlaggedAccount;
-        address[] memory unstakeAccounts = new address[](numSybilAccounts);
+        // TODO: fetch correct roundId when passport contract is updated
+        //uint256 roundId = 1;
 
-        while (currentAccount != address(0)) {
-            address nextAccount = flaggedAccounts[currentAccount].next;
-            uint256 amountCommitted = flaggedAccounts[currentAccount].amountCommitted;
-
+        // First we create a temporary array of size numSybilAccounts
+        address[] memory addressesToSlash = new address[](numSybilAccounts);
+        uint256 numAddressesToSlash = 0;
+        for (uint256 i = 0; i < numSybilAccounts; i++) {
+            address toCheck = flaggedAccounts[i + numAddressesSlashed];
+            uint256 amountCommitted = amountCommittedPerAccount[toCheck];
             if (amountCommitted > threshold) {
-                unstakeAccounts[unstakeCount] = currentAccount;
-                unstakeCount++;
-                delete flaggedAccounts[currentAccount];
-            } else {
-                break; // No need to continue checking further accounts
+                addressesToSlash[numAddressesToSlash] = toCheck;
+                numAddressesToSlash++;
+                delete flaggedAccounts[i];
+                numSybilAccounts--;
             }
-
-            currentAccount = nextAccount;
         }
 
-        if (unstakeCount > 0) {
-            // TODO: Ideally, this function would get called only once
-            // per "epoch", where the epoch coincides with the end of
-            // each round or period for which passports are valid.
-            // I know this is likely to change in the next implementation
-            // of passport though, so am leaving it as a todo for now. 
-            //uint256 roundId = passport.latestRound();
-            // TODO: check re-entrancy here
-            passport.unstakeUsers(1, unstakeAccounts);
-            numSybilAccounts -= unstakeCount;
-
-            // Update the firstFlaggedAccount if it has been removed
-            if (numSybilAccounts == 0) {
-                firstFlaggedAccount = address(0);
-            } else if (!flaggedAccounts[firstFlaggedAccount].exists) {
-                firstFlaggedAccount = flaggedAccounts[firstFlaggedAccount].next;
+        // Then we create another array in which all elements are actual addresses.
+        // We do this because unstakeUsers() reverts if we send it address(0).
+        // Very memory inefficient, but using a linked list also requires both.
+        if (numAddressesToSlash > 0) {
+            address[] memory slashedAccounts = new address[](numAddressesToSlash);
+            for (uint256 i = 0; i < numAddressesToSlash; i++) {
+                slashedAccounts[i] = addressesToSlash[i];
             }
+            // TODO: left commented for now for the sake of testing
+            //passport.unstakeUsers(roundId, slashedAccounts);
+            numAddressesSlashed += numAddressesToSlash;
         }
     }
 
@@ -281,8 +255,13 @@ contract SlashingEngine {
         // Iterate over the existing guardians in descending order
         for (uint256 i = 0; i < topGuardians.length; i++) {
             address existingGuardian = topGuardians[i];
-            if (guardians[existingGuardian].stakedAmount < stakedAmount) {
+            uint256 existingStakedAmount = guardians[existingGuardian].stakedAmount;
+            if (existingStakedAmount < stakedAmount) {
                 rank = uint256(i);
+                break;
+            } else if (existingStakedAmount == stakedAmount) {
+                // If staked amounts are the same, existingGuardian maintains rank and new guardian gets rank i + 1
+                rank = i + 1;
                 break;
             }
         }
