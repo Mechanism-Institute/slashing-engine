@@ -12,7 +12,7 @@ contract SlashingEngineTest is Test {
     SlashingEngine public slashingEngine;
 
     uint256 public constant STAKE_AMOUNT = 100e18;
-    uint256 public constant UNSTAKE_AMOUNT = 50e18;
+    uint256 public constant UNSTAKE_AMOUNT = 99e18;
 
     address public constant ADDRESS_0 = address(0x0000000000000000000000000000000000000000);
 
@@ -47,95 +47,46 @@ contract SlashingEngineTest is Test {
         uint256 initialBalance = gtc.balanceOf(address(this));
         assertEq(initialBalance, 10000e18, "Incorrect initial balance");
         
-        gtc.approve(address(slashingEngine), STAKE_AMOUNT);
+        gtc.approve(address(slashingEngine), STAKE_AMOUNT * 2);
         slashingEngine.stake(STAKE_AMOUNT);
 
         assertEq(gtc.balanceOf(address(slashingEngine)), STAKE_AMOUNT);
 
         assertEq(slashingEngine.getGuardian(address(this)).stakedAmount, STAKE_AMOUNT);
-        // we start ranks from 0 so that they always match the index in topGuardians
-        assertEq(slashingEngine.getGuardian(address(this)).rank, 0); 
-        assertEq(slashingEngine.topGuardians(0), address(this));
-
-        // Now, let's stake more from another account
-        vm.prank(GUARDIAN_1);
-        gtc.approve(address(slashingEngine), G1_STAKE * 2);
-        vm.prank(GUARDIAN_1);
-        slashingEngine.stake(G1_STAKE);
-
-        // should have taken top rank and moved previous guardian down one
-        assertEq(slashingEngine.getGuardian(GUARDIAN_1).stakedAmount, G1_STAKE);
-        assertEq(slashingEngine.getGuardian(GUARDIAN_1).rank, 0);
-        assertEq(slashingEngine.topGuardians(0), GUARDIAN_1);
-        assertEq(slashingEngine.getGuardian(address(this)).rank, 1);
-        assertEq(slashingEngine.topGuardians(1), address(this));
 
         // test that staking again adds the amount staked
-        vm.prank(GUARDIAN_1);
-        slashingEngine.stake(G1_STAKE);
-        assertEq(slashingEngine.getGuardian(GUARDIAN_1).stakedAmount, G1_STAKE * 2);
-        // TODO: fix the calculateRank function to handle this case properly
-        //assertEq(slashingEngine.getGuardian(GUARDIAN_1).rank, 0);
-
-        // test that, if guardians stake the same amount, the existing one ranks higher
-        vm.prank(GUARDIAN_2);
-        gtc.approve(address(slashingEngine), STAKE_AMOUNT);
-        vm.prank(GUARDIAN_2);
         slashingEngine.stake(STAKE_AMOUNT);
-        // assertEq(slashingEngine.getGuardian(address(this)).rank, 1);
-        // assertEq(slashingEngine.getGuardian(GUARDIAN_2).rank, 2);
+        assertEq(slashingEngine.getGuardian(address(this)).stakedAmount, STAKE_AMOUNT * 2);
     }
 
-    function test_unstake() public {
+    function test_unstake_full_amount() public {
         uint256 initialBalance = gtc.balanceOf(address(this));
         assertEq(initialBalance, 10000e18, "Incorrect initial balance");
-        
-        gtc.approve(address(slashingEngine), STAKE_AMOUNT * 10);
-
         // setup to test unstake
+        gtc.approve(address(slashingEngine), STAKE_AMOUNT * 10);
         slashingEngine.stake(STAKE_AMOUNT);
-        assertEq(slashingEngine.getGuardian(address(this)).rank, 0); 
-        assertEq(slashingEngine.topGuardians(0), address(this));
 
-        // first, we test if they unstake the full amount
+        vm.roll(1100);
+
+        // unstake full amount
         slashingEngine.unstake(STAKE_AMOUNT);
-        // should have NO_RANK and reset topGuardians top address
-        assertEq(slashingEngine.getGuardian(address(this)).rank, 65530);
-        assertEq(slashingEngine.topGuardians(0), ADDRESS_0);
         // gtc balance of contract should be 0 again
         assertEq(gtc.balanceOf(address(slashingEngine)), 0);
         // gtc balance of this address should be back to initial
         assertEq(gtc.balanceOf(address(this)), initialBalance);
+    }
 
-        // then, we test if they unstake half the amount
+    function test_unstake_half_amount() public {
+        uint256 initialBalance = gtc.balanceOf(address(this));
+        assertEq(initialBalance, 10000e18, "Incorrect initial balance");
+        // setup to test unstake
+        gtc.approve(address(slashingEngine), STAKE_AMOUNT * 10);
         slashingEngine.stake(STAKE_AMOUNT);
+        vm.roll(1100);
         slashingEngine.unstake(UNSTAKE_AMOUNT);
-        // ranking and topGuardians should still be the same
-        assertEq(slashingEngine.getGuardian(address(this)).rank, 0); 
-        assertEq(slashingEngine.topGuardians(0), address(this));
-        // gtc balance of contract should be half of originally staked amount, i.e.
         assertEq(gtc.balanceOf(address(slashingEngine)), UNSTAKE_AMOUNT);
         // gtc balance of this address should initial less the UNSTAKE_AMOUNT
-        assertEq(gtc.balanceOf(address(this)), initialBalance - UNSTAKE_AMOUNT);
-
-        // Now, let's stake more from another account
-        vm.prank(GUARDIAN_1);
-        gtc.approve(address(slashingEngine), G1_STAKE);
-        vm.prank(GUARDIAN_1);
-        slashingEngine.stake(G1_STAKE);
-        // guardian 1 should be ranked first
-        assertEq(slashingEngine.getGuardian(GUARDIAN_1).rank, 0);
-        assertEq(slashingEngine.topGuardians(0), GUARDIAN_1);
-        assertEq(slashingEngine.getGuardian(address(this)).rank, 1);
-        assertEq(slashingEngine.topGuardians(1), address(this));
-
-        // Finally, let's unstake from the guardian
-        vm.prank(GUARDIAN_1);
-        slashingEngine.unstake(G1_STAKE);
-        // guardian 1 should have no rank, address(this) should be back to 0
-        assertEq(slashingEngine.getGuardian(GUARDIAN_1).rank, 65530);
-        assertEq(slashingEngine.getGuardian(address(this)).rank, 0);
-        assertEq(slashingEngine.topGuardians(0), address(this));
+        assertEq(gtc.balanceOf(address(this)), initialBalance - UNSTAKE_AMOUNT);        
     }
 
     function test_flagSybilAccounts() public {
@@ -146,6 +97,10 @@ contract SlashingEngineTest is Test {
         gtc.approve(address(slashingEngine), G1_STAKE);
         vm.prank(GUARDIAN_1);
         slashingEngine.stake(G1_STAKE);
+        vm.prank(GUARDIAN_2);
+        gtc.approve(address(slashingEngine), G2_STAKE);
+        vm.prank(GUARDIAN_2);
+        slashingEngine.stake(G2_STAKE);
         // create arrays of sybils
         address[] memory sybils1 = new address[](6);
         sybils1[0] = SYBIL_1;
@@ -159,6 +114,7 @@ contract SlashingEngineTest is Test {
         sybils2[1] = SYBIL_2;
         sybils2[2] = SYBIL_3;
 
+        vm.roll(1100);
         slashingEngine.flagSybilAccounts(sybils1);
         // test to see if all sybils were properly recorded
         assertEq(slashingEngine.numSybilAccounts(), 6);
@@ -186,15 +142,12 @@ contract SlashingEngineTest is Test {
         assertEq(slashingEngine.flaggedAccounts(3), SYBIL_4);
         assertEq(slashingEngine.flaggedAccounts(5), SYBIL_6);
 
-        // let's stake from yet another account
-        vm.prank(GUARDIAN_2);
-        gtc.approve(address(slashingEngine), G2_STAKE);
-        vm.prank(GUARDIAN_2);
-        slashingEngine.stake(G2_STAKE);
+        // let's submit another array from our 3rd guardian
         address[] memory sybils3 = new address[](3);
         sybils3[0] = SYBIL_4;
         sybils3[1] = SYBIL_6;
         sybils3[2] = SYBIL_7;
+        
         vm.prank(GUARDIAN_2);
         slashingEngine.flagSybilAccounts(sybils3);
 
