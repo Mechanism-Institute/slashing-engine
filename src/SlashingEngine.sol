@@ -143,12 +143,22 @@ contract SlashingEngine {
 
         for (uint256 i = 0; i < accounts.length; i++) {
             address account = accounts[i];
-            // If this account has never been flagged at all before, we want to
-            // write it into the flaggedAccounts mapping at numSybilAccounts
+            uint256 accountIndex = numSybilAccounts;
+
+            // Find an existing slot with address(0) if available
+            // this occurs when sybils are slashed and helps keep the array small
+            for (uint256 j = 0; j < numSybilAccounts; j++) {
+                if (flaggedAccounts[j] == address(0)) {
+                    accountIndex = j;
+                    break;
+                }
+            }
+
+            // If the account has never been flagged before, set the new index
             if (amountCommittedPerAccount[account] == 0) {
-                flaggedAccounts[numSybilAccounts] = account;
-                amountCommittedPerAccount[account] = guardians[msg.sender].stakedAmount;
+                flaggedAccounts[accountIndex] = account;
                 flaggedByGuardian[account][msg.sender] = true;
+                amountCommittedPerAccount[account] = guardians[msg.sender].stakedAmount;
                 numSybilAccounts++;
                 emit SybilAccountFlagged(account, amountCommittedPerAccount[account]);
             }
@@ -176,12 +186,10 @@ contract SlashingEngine {
         // First we create a temporary array of size numSybilAccounts
         address[] memory addressesToSlash = new address[](numSybilAccounts);
         uint256 numAddressesToSlash = 0;
-        for (uint256 i = 0; i < numSybilAccounts; i++) {
-            // TODO: I wanted to try and make sure that we don't re-loop over
-            // accounts that have already been slashed, but this won't
-            // work if we slash at index 4 and 6, bu not 5, for eg.
-            // maybe this is cause to return to a linked list.
-            address toCheck = flaggedAccounts[i + numAddressesSlashed];
+        // TODO: the `+ numAddressesSlashed` is bad. It only grows and will eventually
+        // brick this function. I can't think of a better way right now though.
+        for (uint256 i = 0; i < numSybilAccounts + numAddressesSlashed; i++) {
+            address toCheck = flaggedAccounts[i];
             uint256 amountCommitted = amountCommittedPerAccount[toCheck];
             if (amountCommitted > threshold) {
                 addressesToSlash[numAddressesToSlash] = toCheck;
@@ -192,8 +200,10 @@ contract SlashingEngine {
         }
 
         // Then we create another array in which all elements are actual addresses.
-        // We do this because unstakeUsers() reverts if we send it address(0).
-        // Very memory inefficient, but using a linked list also requires both.
+        // We do this because unstakeUsers() reverts if we send it an address(0).
+        // Very memory inefficient, but even a linked list would require this sort of thing.
+        // Can't .pop() the elements at the end (numSybilAccounts - numAddressesToSlash)
+        // because .pop() is not available on arrays only stored in memory.
         if (numAddressesToSlash > 0) {
             address[] memory slashedAccounts = new address[](numAddressesToSlash);
             for (uint256 i = 0; i < numAddressesToSlash; i++) {

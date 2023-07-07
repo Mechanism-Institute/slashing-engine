@@ -182,6 +182,7 @@ contract SlashingEngineTest is Test {
         // should now be able to unstake the first 3
         slashingEngine.slashFlaggedAccounts();
         assertEq(slashingEngine.numSybilAccounts(), 3);
+        assertEq(slashingEngine.flaggedAccounts(0), ADDRESS_0);
         assertEq(slashingEngine.flaggedAccounts(3), SYBIL_4);
         assertEq(slashingEngine.flaggedAccounts(5), SYBIL_6);
 
@@ -196,18 +197,23 @@ contract SlashingEngineTest is Test {
         sybils3[2] = SYBIL_7;
         vm.prank(GUARDIAN_2);
         slashingEngine.flagSybilAccounts(sybils3);
+
         // we should have 3 left from the previous flags + 1 new one
         assertEq(slashingEngine.numSybilAccounts(), 4);
-
+        // 4 and 6 should just be flagged again. Because we're trying to optimise for
+        // space usage in the array, 7 should be written to flaggedAccounts(0) now that
+        // it is set to address(0) again.
+        assertEq(slashingEngine.flaggedAccounts(0), SYBIL_7);
+        
         // now slash again. we set CONFIDENCE to 1, so the threshold
         // should be 200 gtc, so 4 and 6 should now pass that and be slashed
         slashingEngine.slashFlaggedAccounts();
         // should be 2 flagged accounts left: 5 and 7
-        // TODO: figure out why these fail
-        // assertEq(slashingEngine.numSybilAccounts(), 2);
-        // assertEq(slashingEngine.flaggedAccounts(4), SYBIL_5);
-        // assertEq(slashingEngine.flaggedAccounts(5), ADDRESS_0);
-        // assertEq(slashingEngine.flaggedAccounts(6), SYBIL_7);
+        assertEq(slashingEngine.numSybilAccounts(), 2);
+        assertEq(slashingEngine.flaggedAccounts(0), SYBIL_7);
+        assertEq(slashingEngine.flaggedAccounts(4), SYBIL_5);
+        assertEq(slashingEngine.flaggedAccounts(3), ADDRESS_0);
+        assertEq(slashingEngine.flaggedAccounts(5), ADDRESS_0);
     }
 }
 
