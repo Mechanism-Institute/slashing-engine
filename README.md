@@ -29,8 +29,8 @@ There are numerous additional hurdles to overcome:
 1. We cannot open source the exact methodology in full any way, as that will lead to new techniques for generating sybils which pass the checks in a constantly escalating game.
 2. If we put more data on-chain, how do we preserve privacy? ZKPs are one legitimate approach here.
 3. If we do use ZKPs to put data on chain, how do we:
-    a. make sure that the checks do not leak information
-    b. make sure that the way the checks happen do not reveal exactly how we flag sybils, leading us back to problem 1.
+    1. make sure that the checks do not leak information
+    2. make sure that the way the checks happen do not reveal exactly how we flag sybils, leading us back to problem 1.
 4. There are also questions of implementation complexity tangled up with all the above: both in terms of ZKPs and in terms of running various sybil checks on chain in a gas efficient way.
 
 Rather than tackling the above head-on, is there a way we can route around some of the challenges outlined above? We want Passport to become a powerful tool for ensuring that unique humans are using any given application, and in order to ensure that occurs, we need to balance economic rewards and punishments well. How can we achieve such a blance in the simplest way possible? 
