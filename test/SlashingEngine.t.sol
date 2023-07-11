@@ -84,9 +84,9 @@ contract SlashingEngineTest is Test {
         slashingEngine.stake(STAKE_AMOUNT);
         vm.roll(1100);
         slashingEngine.unstake(UNSTAKE_AMOUNT);
-        assertEq(gtc.balanceOf(address(slashingEngine)), UNSTAKE_AMOUNT);
+        assertEq(gtc.balanceOf(address(slashingEngine)), STAKE_AMOUNT - UNSTAKE_AMOUNT);
         // gtc balance of this address should initial less the UNSTAKE_AMOUNT
-        assertEq(gtc.balanceOf(address(this)), initialBalance - UNSTAKE_AMOUNT);        
+        assertEq(gtc.balanceOf(address(this)), initialBalance - (STAKE_AMOUNT - UNSTAKE_AMOUNT));        
     }
 
     function test_flagSybilAccounts() public {

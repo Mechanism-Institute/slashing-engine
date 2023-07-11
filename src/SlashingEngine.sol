@@ -28,7 +28,7 @@ contract SlashingEngine {
     address public immutable dao;
 
     IIDStaking public passport;
-    uint256 public lowestStakedAmount = 10e18;
+    uint256 public floor = 10e18;
     uint256 public highestStakedAmount;
     uint256 public blocksBeforeQualified = 1000;
     uint256 public VOTES_THRESHOLD = 7;
@@ -61,12 +61,13 @@ contract SlashingEngine {
     }
 
     /**
-     * @notice          enables anyone to stake GTC to become a guardian. The top 21 stakers become
-     *                  guardians - everyone else remains unstaked. The top 21 are stored in an ordered array.
+     * @notice          enables anyone to stake GTC to become a guardian. Anyone who stakes more than
+     *                  the floor is therefore a guardian, and the DAO can raise or lower this floor at
+     *                  any time should they wish to adjust the number of active guardians for any reason.
      * @param amount    the amount of GTC being staked
      */
     function stake(uint256 amount) public {
-        require(amount > lowestStakedAmount, "Must stake more");
+        require(amount > floor, "Must stake more");
         
         gtc.transferFrom(msg.sender, address(this), amount);
 
@@ -95,8 +96,7 @@ contract SlashingEngine {
     }
 
     /**
-     * @notice          enables guardians who have staked GTC to withdraw any amount of that GTC up to the total
-     *                  after which it reorders the topGuardians array
+     * @notice          enables guardians who have staked GTC to withdraw any amount of that GTC
      * @param amount    the amount of GTC to be withdrawn
      */
     function unstake(uint256 amount) external {
@@ -111,13 +111,13 @@ contract SlashingEngine {
     }
 
     /**
-     * @notice          enables any of the topGuardians to submit an array of addresses they believe to be sybils.
+     * @notice          enables any guardian to submit an array of addresses they believe to be sybils.
      *                  We have explored both linked lists and a merkle root - in this context they are not any 
      *                  more efficient.
      * @param accounts  the array of accounts considered to be sybils by this guardian 
      */
     function flagSybilAccounts(address[] calldata accounts) external {
-        require(guardians[msg.sender].stakedAmount > lowestStakedAmount, "Not a guardian");
+        require(guardians[msg.sender].stakedAmount > floor, "Not a guardian");
         require(block.number > guardians[msg.sender].blockQualified, "Not yet qualified");
 
         for (uint256 i = 0; i < accounts.length; i++) {
@@ -195,13 +195,13 @@ contract SlashingEngine {
     }
 
     /**
-     * @notice          enables any current guardian to vote to slash another guardian who they believe
+     * @notice          enables any guardian to vote to slash another guardian who they believe
      *                  to be behaving maliciously (i.e. submitting accounts as sybils which are provably
      *                  not sybils).
      * @param guardian  the guardian to be slashed
      */
     function voteAgainstGuardian(address guardian) external returns (bool) {
-        require(guardians[msg.sender].stakedAmount > lowestStakedAmount, "Not a guardian");
+        require(guardians[msg.sender].stakedAmount > floor, "Not a guardian");
         require(block.number > guardians[msg.sender].blockQualified, "Not yet qualified");
 
         // Increment the votes against the specified guardian
@@ -219,8 +219,8 @@ contract SlashingEngine {
         blocksBeforeQualified = newNumberBlocks;
     }
 
-    function updateLowestStakedAmount(uint256 newLowestAmount) external onlyDAO {
-        lowestStakedAmount = newLowestAmount;
+    function updateFloor(uint256 newFloor) external onlyDAO {
+        floor = newFloor;
     }
 
     function updateVoteThreshold(uint256 newThreshold) external onlyDAO {
@@ -245,6 +245,7 @@ contract SlashingEngine {
      *                  set by the DAO
      * @param guardian  address to be potentially slashed
      * @param votes     the votes currently against that address
+     * @return          whether the slashing was successful or not based on the amount of current votes
      */
     function slashGuardian(address guardian, uint256 votes) internal returns (bool) {
         if (votes <= VOTES_THRESHOLD) {
