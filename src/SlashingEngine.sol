@@ -13,6 +13,7 @@ contract SlashingEngine {
     struct Guardian {
         uint256 stakedAmount;
         uint256 blockQualified;
+        uint256 numAccountsFlagged;
         uint256 votes;
     }
     mapping(address => Guardian) public guardians;    
@@ -30,7 +31,7 @@ contract SlashingEngine {
     IIDStaking public passport;
     uint256 public floor = 10e18;
     uint256 public highestStakedAmount;
-    uint256 public blocksBeforeQualified = 1000;
+    uint256 public blocksBeforeQualified = 7100; // approx 1 day
     uint256 public VOTES_THRESHOLD = 7;
     // Used in the confidenceThreshold function, which multiplies the highest amount
     // staked in the topGuardians array by this number. Any flagged account with more than
@@ -138,6 +139,7 @@ contract SlashingEngine {
                 flaggedAccounts[accountIndex] = account;
                 flaggedByGuardian[account][msg.sender] = true;
                 amountCommittedPerAccount[account] = guardians[msg.sender].stakedAmount;
+                guardians[msg.sender].numAccountsFlagged++;
                 numSybilAccounts++;
                 emit SybilAccountFlagged(account, amountCommittedPerAccount[account]);
             }
@@ -202,7 +204,10 @@ contract SlashingEngine {
      */
     function voteAgainstGuardian(address guardian) external returns (bool) {
         require(guardians[msg.sender].stakedAmount > floor, "Not a guardian");
-        require(block.number > guardians[msg.sender].blockQualified, "Not yet qualified");
+        // we require that voting on a guardian only be done by accounts older than ~1 month
+        require(block.number > guardians[msg.sender].blockQualified + 220000, "Not yet qualified");
+        // who have been actively involved in sybil defense
+        require(guardians[msg.sender].numAccountsFlagged > 100, "Not participating enough");
 
         // Increment the votes against the specified guardian
         guardians[guardian].votes++;

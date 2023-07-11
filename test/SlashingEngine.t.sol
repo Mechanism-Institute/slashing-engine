@@ -66,7 +66,7 @@ contract SlashingEngineTest is Test {
         gtc.approve(address(slashingEngine), STAKE_AMOUNT * 10);
         slashingEngine.stake(STAKE_AMOUNT);
 
-        vm.roll(1100);
+        vm.roll(11000);
 
         // unstake full amount
         slashingEngine.unstake(STAKE_AMOUNT);
@@ -82,7 +82,7 @@ contract SlashingEngineTest is Test {
         // setup to test unstake
         gtc.approve(address(slashingEngine), STAKE_AMOUNT * 10);
         slashingEngine.stake(STAKE_AMOUNT);
-        vm.roll(1100);
+        vm.roll(11000);
         slashingEngine.unstake(UNSTAKE_AMOUNT);
         assertEq(gtc.balanceOf(address(slashingEngine)), STAKE_AMOUNT - UNSTAKE_AMOUNT);
         // gtc balance of this address should initial less the UNSTAKE_AMOUNT
@@ -114,7 +114,7 @@ contract SlashingEngineTest is Test {
         sybils2[1] = SYBIL_2;
         sybils2[2] = SYBIL_3;
 
-        vm.roll(1100);
+        vm.roll(11000);
         slashingEngine.flagSybilAccounts(sybils1);
         // test to see if all sybils were properly recorded
         assertEq(slashingEngine.numSybilAccounts(), 6);
